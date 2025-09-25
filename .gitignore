@@ -1,0 +1,10 @@
+node_modules/
+
+# Environment files
+.env
+
+
+# Optional: common noise
+npm-debug.log*
+yarn-error.log*
+
