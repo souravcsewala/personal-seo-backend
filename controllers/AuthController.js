@@ -139,8 +139,13 @@ const ResendRegisterOtp = async (req, res, next) => {
     rec.expiresAt = new Date(Date.now() + 2 * 60 * 1000);
     rec.resendAfter = new Date(Date.now() + 30 * 1000);
     await rec.save();
-    await sendVerificationEmail(email, code, req);
-    res.json({ success: true, message: 'Verification code resent' });
+    const token = jwt.sign({ email, otp: code }, process.env.JWT_SECRET || "dev-secret", { expiresIn: '2m' });
+    res.json({ success: true, message: 'Verification code resent', token });
+    setImmediate(() => {
+      sendVerificationEmail(email, code, req).catch((err) => {
+        console.error('sendVerificationEmail failed:', err);
+      });
+    });
   } catch (error) { next(error); }
 };
 
