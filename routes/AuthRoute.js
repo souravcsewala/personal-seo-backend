@@ -3,12 +3,17 @@ const express = require("express");
 
 
 const { isAuthCheck } = require("../middileware/IsAuthCheck");
-const{UserRegister,StudentLogin,Login,UpdateInterestedTopic,GetUserProfile, EditProfile, GetUserStats}=require("../controllers/AuthController")
+const{UserRegister,StudentLogin,Login,UpdateInterestedTopic,GetUserProfile, EditProfile, GetUserStats, RequestRegisterOtp, VerifyRegisterOtp, ResendRegisterOtp}=require("../controllers/AuthController")
 
 const Router = express.Router();
 
 
 Router.route("/user-register").post(UserRegister)
+
+// OTP based registration
+Router.route("/register-otp/request").post(RequestRegisterOtp)
+Router.route("/register-otp/verify").post(VerifyRegisterOtp)
+Router.route("/register-otp/resend").post(ResendRegisterOtp)
 
 Router.route("/user-login").post(Login)
 

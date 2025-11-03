@@ -21,6 +21,7 @@
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
     "express-fileupload": "^1.5.2",
+    "firebase-admin": "^13.5.0",
     "jsdom": "^27.0.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.18.1",

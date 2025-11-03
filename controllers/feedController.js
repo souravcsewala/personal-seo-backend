@@ -4,6 +4,57 @@ const Poll = require("../models/Poll");
 const TrendingScore = require("../models/TrendingScore");
 const User = require("../models/User");
 const { getSignedUrlForKey } = require("../special/s3Client");
+const slugify = require("slugify");
+
+function toSlug(title) {
+  return slugify(String(title || ""), { lower: true, strict: true, trim: true });
+}
+function htmlToPlainText(html) {
+  const text = String(html || '').replace(/<[^>]+>/g, ' ');
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+async function ensureQuestionSlug(doc) {
+  if (!doc || doc.slug) return doc;
+  const base = toSlug(htmlToPlainText(doc.description) || 'question');
+  if (!base) return doc;
+  let candidate = base;
+  let i = 2;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const exists = await Question.findOne({ slug: candidate, _id: { $ne: doc._id } }).select("_id");
+    if (!exists) break;
+    candidate = `${base}-${i++}`;
+    if (i > 50) {
+      candidate = `${base}-${Date.now().toString(36).slice(-5)}`;
+      break;
+    }
+  }
+  doc.slug = candidate;
+  try { await doc.save(); } catch (_) {}
+  return doc;
+}
+
+async function ensurePollSlug(doc) {
+  if (!doc || doc.slug) return doc;
+  const base = toSlug(doc.title || "");
+  if (!base) return doc;
+  let candidate = base;
+  let i = 2;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const exists = await Poll.findOne({ slug: candidate, _id: { $ne: doc._id } }).select("_id");
+    if (!exists) break;
+    candidate = `${base}-${i++}`;
+    if (i > 50) {
+      candidate = `${base}-${Date.now().toString(36).slice(-5)}`;
+      break;
+    }
+  }
+  doc.slug = candidate;
+  try { await doc.save(); } catch (_) {}
+  return doc;
+}
 
 function wrapBlog(doc) {
   return {
@@ -70,14 +121,16 @@ async function getFeed(req, res, next) {
           trendingDocs.push(wrapBlog(plain));
         }
       } else if (t.contentType === "question") {
-        const doc = await Question.findById(t.contentId)
+        let doc = await Question.findById(t.contentId)
           .populate("category")
           .populate("author", "fullname email profileimage");
+        if (doc && !doc.slug) doc = await ensureQuestionSlug(doc);
         if (doc) trendingDocs.push(wrapQuestion(doc));
       } else if (t.contentType === "poll") {
-        const doc = await Poll.findById(t.contentId)
+        let doc = await Poll.findById(t.contentId)
           .populate("category")
           .populate("author", "fullname email profileimage");
+        if (doc && !doc.slug) doc = await ensurePollSlug(doc);
         if (doc) trendingDocs.push(wrapPoll(doc));
       }
     }
@@ -110,11 +163,13 @@ async function getFeed(req, res, next) {
           })
       );
 
-      const iq = await Question.find({ category: { $in: interestedIds } })
+      let iq = await Question.find({ category: { $in: interestedIds } })
         .populate("category")
         .populate("author", "fullname email profileimage")
         .sort({ createdAt: -1 })
         .limit(cap);
+      // backfill slugs
+      await Promise.all(iq.map((d) => ensureQuestionSlug(d)));
       interestedQuestions = iq
         .filter((d) => !trendingKeys.has(`question:${String(d._id)}`))
         .map(wrapQuestion);
@@ -124,6 +179,7 @@ async function getFeed(req, res, next) {
         .populate("author", "fullname email profileimage")
         .sort({ createdAt: -1 })
         .limit(cap);
+      await Promise.all(interestedPolls.map((d) => ensurePollSlug(d)));
       interestedPolls = interestedPolls
         .filter((d) => !trendingKeys.has(`poll:${String(d._id)}`))
         .map(wrapPoll);
@@ -168,6 +224,7 @@ async function getFeed(req, res, next) {
       .populate("author", "fullname email profileimage")
       .sort({ createdAt: -1 })
       .limit(cap);
+    await Promise.all(otherQuestionsDocs.map((d) => ensureQuestionSlug(d)));
     const otherQuestions = otherQuestionsDocs.map((q) => wrapQuestion(q));
 
     const otherPollsDocs = await Poll.find({ _id: { $nin: Array.from(excludeIds.poll).filter((id) => /^[0-9a-fA-F]{24}$/.test(String(id))) } })
@@ -175,6 +232,7 @@ async function getFeed(req, res, next) {
       .populate("author", "fullname email profileimage")
       .sort({ createdAt: -1 })
       .limit(cap);
+    await Promise.all(otherPollsDocs.map((d) => ensurePollSlug(d)));
     const otherPolls = otherPollsDocs.map(wrapPoll);
 
     // Compose feed per rules
@@ -232,14 +290,16 @@ async function getPublicFeed(req, res, next) {
           trendingDocs.push(wrapBlog(plain));
         }
       } else if (t.contentType === "question") {
-        const doc = await Question.findById(t.contentId)
+        let doc = await Question.findById(t.contentId)
           .populate("category")
           .populate("author", "fullname email profileimage");
+        if (doc && !doc.slug) doc = await ensureQuestionSlug(doc);
         if (doc) trendingDocs.push(wrapQuestion(doc));
       } else if (t.contentType === "poll") {
-        const doc = await Poll.findById(t.contentId)
+        let doc = await Poll.findById(t.contentId)
           .populate("category")
           .populate("author", "fullname email profileimage");
+        if (doc && !doc.slug) doc = await ensurePollSlug(doc);
         if (doc) trendingDocs.push(wrapPoll(doc));
       }
     }

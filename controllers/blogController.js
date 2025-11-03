@@ -4,8 +4,10 @@ const Category = require("../models/Category");
 const User = require("../models/User");
 const { uploadToS3, deleteFromS3, getSignedUrlForKey } = require("../special/s3Client");
 const ErrorHandeler = require("../special/errorHandelar");
+const { sendMail, buildFrontendUrl } = require("../special/mailer");
 const BacklinkPolicy = require("../models/BacklinkPolicy");
 const { applyBlogLinkPolicy } = require("../utils/linkPolicy");
+const { sanitizeHtml } = require("../utils/sanitizeHtml");
 
 const toSlug = (title) => slugify(title, { lower: true, strict: true, trim: true });
 
@@ -46,12 +48,28 @@ const resolveCategoryId = async (categoryInput) => {
   return doc ? doc._id : null;
 };
 
+function extractText(html) {
+  try {
+    const str = String(html || "");
+    return str.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  } catch { return ""; }
+}
+
+function generateMetaDescriptionFromContent(html, maxLen = 160) {
+  const text = extractText(html);
+  if (!text) return "";
+  if (text.length <= maxLen) return text;
+  const cut = text.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trim() + '…';
+}
+
 // Create Blog
 const createBlog = async (req, res, next) => {
   try {
     const { title, metaDescription, category, tags, imageAlt } = req.body;
     let content = req.body.content;
-    if (!title || !content || !metaDescription || !category) {
+    if (!title || !content || !category) {
       return next(new ErrorHandeler("Missing required fields", 400));
     }
 
@@ -72,6 +90,8 @@ const createBlog = async (req, res, next) => {
 
     const slug = await generateUniqueSlug(title);
 
+    // Sanitize first (strip scripts/javascript URLs), then apply backlink policy
+    content = sanitizeHtml(content);
     // Apply backlink policy to content
     const policy = await BacklinkPolicy.findOne();
     if (policy) {
@@ -85,12 +105,13 @@ const createBlog = async (req, res, next) => {
         return next(new ErrorHandeler(e.message || 'Content policy validation failed', 400));
       }
     }
+    const autoMeta = metaDescription && String(metaDescription).trim().length ? String(metaDescription).trim() : generateMetaDescriptionFromContent(content);
     let blog;
     try {
       blog = await Blog.create({
         title,
         content,
-        metaDescription,
+        metaDescription: autoMeta,
         category: categoryId,
         tags: Array.isArray(tags) ? tags : (typeof tags === 'string' ? tags.split(',').map(t=>t.trim()).filter(Boolean) : []),
         image: imageUrl,
@@ -106,7 +127,7 @@ const createBlog = async (req, res, next) => {
         blog = await Blog.create({
           title,
           content,
-          metaDescription,
+          metaDescription: autoMeta,
           category: categoryId,
           tags: Array.isArray(tags) ? tags : (typeof tags === 'string' ? tags.split(',').map(t=>t.trim()).filter(Boolean) : []),
           image: imageUrl,
@@ -122,6 +143,19 @@ const createBlog = async (req, res, next) => {
 
     const signedUrl = blog.imageKey ? await getSignedUrlForKey(blog.imageKey, 3600) : undefined;
     res.status(201).json({ success: true, data: { ...blog.toObject(), signedUrl } });
+    // Notify users who follow this category (exclude author)
+    setImmediate(async () => {
+      try {
+        const subs = await User.find({ interested_topic: blog.category }).select('email _id');
+        const recipients = subs.filter(u => String(u._id) !== String(blog.author)).map(u => u.email).filter(Boolean);
+        if (recipients.length) {
+          const subject = `New Blog: ${blog.title}`;
+          const link = buildFrontendUrl(`blog/${encodeURIComponent(blog.slug || blog._id)}`, req);
+          const html = `<p>A new blog was posted in a category you follow.</p><p><strong>${blog.title}</strong></p><p><a href="${link}">Read Blog</a></p>`;
+          await sendMail({ to: recipients, subject, html, text: `${blog.title} - ${link}` });
+        }
+      } catch (_) {}
+    });
   } catch (error) {
     next(error);
   }
@@ -288,20 +322,23 @@ const updateBlog = async (req, res, next) => {
       const policy = await BacklinkPolicy.findOne();
       if (policy) {
         try {
-          const processed = applyBlogLinkPolicy(content, policy, req.protocol + '://' + req.get('host'));
+          const processed = applyBlogLinkPolicy(sanitizeHtml(content), policy, req.protocol + '://' + req.get('host'));
           if (processed && processed.html) {
             blog.content = processed.html;
           } else {
-            blog.content = content;
+            blog.content = sanitizeHtml(content);
           }
         } catch (e) {
           return next(new ErrorHandeler(e.message || 'Content policy validation failed', 400));
         }
       } else {
-        blog.content = content;
+        blog.content = sanitizeHtml(content);
+      }
+      if (!metaDescription || !String(metaDescription).trim()) {
+        blog.metaDescription = generateMetaDescriptionFromContent(blog.content);
       }
     }
-    if (metaDescription) blog.metaDescription = metaDescription;
+    if (metaDescription && String(metaDescription).trim()) blog.metaDescription = String(metaDescription).trim();
     if (typeof tags !== 'undefined') {
       blog.tags = Array.isArray(tags) ? tags : (typeof tags === 'string' ? tags.split(',').map(t=>t.trim()).filter(Boolean) : []);
     }
@@ -346,12 +383,17 @@ const updateBlog = async (req, res, next) => {
   }
 };
 
-// Delete Blog
+// Delete Blog (only author or admin)
 const deleteBlog = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const blog = await Blog.findById(id);
+    const userId = req.userid || (req.user && req.user._id);
+    const userRole = (req.user && req.user.role) || 'user';
+    const blog = await Blog.findById(id).select('author imageKey');
     if (!blog) return next(new ErrorHandeler("Blog not found", 404));
+    const isOwner = userId && String(blog.author) === String(userId);
+    const isAdmin = userRole === 'admin';
+    if (!isOwner && !isAdmin) return next(new ErrorHandeler('Forbidden', 403));
     if (blog.imageKey) {
       await deleteFromS3(blog.imageKey);
     }
@@ -407,6 +449,20 @@ const addComment = async (req, res, next) => {
     } catch (_) {}
 
     res.status(201).json({ success: true, data: populated.comments[0] });
+    // Notify blog author about new comment
+    try {
+      const author = await User.findById(blog.author).select('email fullname');
+      const email = author?.email;
+      const commenterId = req.userid || (req.user && req.user._id);
+      if (email && String(blog.author) !== String(commenterId)) {
+        let actorName = (req.user && req.user.fullname) ? req.user.fullname : '';
+        if (!actorName && commenterId) { try { const u = await User.findById(commenterId).select('fullname'); actorName = u?.fullname || ''; } catch { } }
+        const subject = `New comment on your blog`;
+        const link = buildFrontendUrl(`blog/${encodeURIComponent(blog.slug || blog._id)}#comments`, req);
+        const html = `<p>Hi ${author?.fullname || ''},</p><p><strong>${actorName || 'A member'}</strong> commented on your blog:</p><p><em>${blog.title}</em></p><p><a href="${link}">View comments</a></p>`;
+        await sendMail({ to: email, subject, html, text: link });
+      }
+    } catch (_) {}
   } catch (error) {
     next(error);
   }
@@ -490,6 +546,8 @@ module.exports = {
   getComments,
   toggleLike,
   shareBlog,
+  getCommentReplies,
+  addCommentReply,
 };
 
 // Recommended blogs by category of a given blog id or slug
@@ -609,4 +667,140 @@ async function searchBlogs(req, res, next) {
 
 module.exports.searchBlogs = searchBlogs;
 
+// ===== Comment Replies =====
+async function getCommentReplies(req, res, next) {
+  try {
+    const { id, commentId } = req.params;
+    const filter = id.match(/^[0-9a-fA-F]{24}$/) ? { _id: id } : { slug: id };
+    const blog = await Blog.findOne(filter)
+      .select('comments')
+      .populate({ path: 'comments.user', select: 'fullname email profileimage' })
+      .populate({ path: 'comments.replies.user', select: 'fullname email profileimage' });
+    if (!blog) return next(new ErrorHandeler('Blog not found', 404));
+    const comment = (blog.comments || []).find(c => String(c._id) === String(commentId));
+    if (!comment) return next(new ErrorHandeler('Comment not found', 404));
+    // Optionally add signed URLs for avatars
+    try {
+      const withAvatars = await Promise.all((comment.replies || []).map(async (r) => {
+        const obj = r.toObject ? r.toObject() : r;
+        if (obj.user && obj.user.profileimage && obj.user.profileimage.key) {
+          try { obj.user.profileimage.signedUrl = await getSignedUrlForKey(obj.user.profileimage.key, 3600); } catch (_) {}
+        }
+        return obj;
+      }));
+      return res.json({ success: true, data: withAvatars });
+    } catch (_) {}
+    res.json({ success: true, data: comment.replies || [] });
+  } catch (e) { next(e); }
+}
+
+async function addCommentReply(req, res, next) {
+  try {
+    const { id, commentId } = req.params;
+    const { content, parentId } = req.body;
+    const userId = req.userid || (req.user && req.user._id);
+    if (!userId) return next(new ErrorHandeler('Unauthorized', 401));
+    if (!content || !String(content).trim()) return next(new ErrorHandeler('Content is required', 400));
+    const filter = id.match(/^[0-9a-fA-F]{24}$/) ? { _id: id } : { slug: id };
+    const blog = await Blog.findOne(filter).select('comments author title slug');
+    if (!blog) return next(new ErrorHandeler('Blog not found', 404));
+    const comment = (blog.comments || []).find(c => String(c._id) === String(commentId));
+    if (!comment) return next(new ErrorHandeler('Comment not found', 404));
+    const reply = { user: userId, content: String(content).trim(), parentId: parentId || undefined, createdAt: new Date() };
+    comment.replies = [reply, ...(comment.replies || [])];
+    await blog.save();
+    const updated = await Blog.findById(blog._id)
+      .select('comments')
+      .populate({ path: 'comments.replies.user', select: 'fullname email profileimage' })
+      .populate({ path: 'comments.user', select: 'fullname email profileimage' });
+    const updatedComment = (updated.comments || []).find(c => String(c._id) === String(commentId));
+    const created = (updatedComment?.replies || [])[0];
+    res.status(201).json({ success: true, data: created });
+    // Email notify target: if replying to a reply -> that reply's user, else the original comment author
+    setImmediate(async () => {
+      try {
+        let targetUserId = null;
+        if (parentId) {
+          const parent = (comment.replies || []).find(r => String(r._id) === String(parentId));
+          targetUserId = parent ? parent.user : null;
+        } else {
+          targetUserId = comment.user;
+        }
+        if (targetUserId && String(targetUserId) !== String(userId)) {
+          const u = await User.findById(targetUserId).select('email fullname');
+          if (u && u.email) {
+            let actorName = (req.user && req.user.fullname) ? req.user.fullname : '';
+            if (!actorName && userId) { try { const tu = await User.findById(userId).select('fullname'); actorName = tu?.fullname || ''; } catch {} }
+            const subject = 'Someone replied to your comment';
+            const link = buildFrontendUrl(`blog/${encodeURIComponent(blog.slug || blog._id)}#comments`, req);
+            const html = `<p>Hi ${u.fullname || ''},</p><p><strong>${actorName || 'A member'}</strong> replied to your comment on:</p><p><em>${blog.title || ''}</em></p><p><a href="${link}">View the conversation</a></p>`;
+            await sendMail({ to: u.email, subject, html, text: link });
+          }
+        }
+      } catch (_) {}
+    });
+  } catch (e) { next(e); }
+}
+
+module.exports.getCommentReplies = getCommentReplies;
+module.exports.addCommentReply = addCommentReply;
+
+// Update a specific reply under a comment
+async function updateCommentReply(req, res, next) {
+  try {
+    const { id, commentId, replyId } = req.params;
+    const { content } = req.body;
+    const userId = req.userid || (req.user && req.user._id);
+    if (!userId) return next(new ErrorHandeler('Unauthorized', 401));
+    if (!content || !String(content).trim()) return next(new ErrorHandeler('Content is required', 400));
+
+    const filter = id.match(/^[0-9a-fA-F]{24}$/) ? { _id: id } : { slug: id };
+    const blog = await Blog.findOne(filter).select('comments');
+    if (!blog) return next(new ErrorHandeler('Blog not found', 404));
+    const comment = (blog.comments || []).find(c => String(c._id) === String(commentId));
+    if (!comment) return next(new ErrorHandeler('Comment not found', 404));
+    const reply = (comment.replies || []).find(r => String(r._id) === String(replyId));
+    if (!reply) return next(new ErrorHandeler('Reply not found', 404));
+    const isOwner = String(reply.user) === String(userId);
+    const isAdmin = req.user && (req.user.role === 'admin');
+    if (!isOwner && !isAdmin) return next(new ErrorHandeler('Forbidden', 403));
+
+    reply.content = String(content).trim();
+    await blog.save();
+
+    const populated = await Blog.findById(blog._id)
+      .select('comments')
+      .populate({ path: 'comments.replies.user', select: 'fullname email profileimage' });
+    const updatedComment = (populated.comments || []).find(c => String(c._id) === String(commentId));
+    const updatedReply = (updatedComment?.replies || []).find(r => String(r._id) === String(replyId));
+    return res.json({ success: true, data: updatedReply || reply });
+  } catch (e) { next(e); }
+}
+
+// Delete a specific reply under a comment
+async function deleteCommentReply(req, res, next) {
+  try {
+    const { id, commentId, replyId } = req.params;
+    const userId = req.userid || (req.user && req.user._id);
+    if (!userId) return next(new ErrorHandeler('Unauthorized', 401));
+
+    const filter = id.match(/^[0-9a-fA-F]{24}$/) ? { _id: id } : { slug: id };
+    const blog = await Blog.findOne(filter).select('comments');
+    if (!blog) return next(new ErrorHandeler('Blog not found', 404));
+    const comment = (blog.comments || []).find(c => String(c._id) === String(commentId));
+    if (!comment) return next(new ErrorHandeler('Comment not found', 404));
+    const reply = (comment.replies || []).find(r => String(r._id) === String(replyId));
+    if (!reply) return next(new ErrorHandeler('Reply not found', 404));
+    const isOwner = String(reply.user) === String(userId);
+    const isAdmin = req.user && (req.user.role === 'admin');
+    if (!isOwner && !isAdmin) return next(new ErrorHandeler('Forbidden', 403));
+
+    comment.replies = (comment.replies || []).filter(r => String(r._id) !== String(replyId));
+    await blog.save();
+    return res.json({ success: true, data: { deleted: true } });
+  } catch (e) { next(e); }
+}
+
+module.exports.updateCommentReply = updateCommentReply;
+module.exports.deleteCommentReply = deleteCommentReply;
 

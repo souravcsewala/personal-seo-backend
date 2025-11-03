@@ -11,6 +11,7 @@ const PollOptionSchema = new mongoose.Schema(
 const PollSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true },
+    slug: { type: String, trim: true },
     description: { type: String },
     options: {
       type: [PollOptionSchema],
@@ -38,6 +39,16 @@ PollSchema.pre("save", function (next) {
   this.closesAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
   next();
 });
+
+// Ensure unique slug when present
+PollSchema.index(
+  { slug: 1 },
+  {
+    unique: true,
+    name: "unique_poll_slug",
+    partialFilterExpression: { slug: { $type: "string" } },
+  }
+);
 
 module.exports = mongoose.model("Poll", PollSchema);
 

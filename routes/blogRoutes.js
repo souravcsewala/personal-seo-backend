@@ -1,5 +1,5 @@
 const express = require("express");
-const { createBlog, getAllBlogs, getBlogsByAuthor, getBlogsByCategory, getBlogById, getBlogBySlug, updateBlog, deleteBlog, addComment, getComments, toggleLike, shareBlog, getRecommendedByBlog, editComment, deleteComment, searchBlogs } = require("../controllers/blogController");
+const { createBlog, getAllBlogs, getBlogsByAuthor, getBlogsByCategory, getBlogById, getBlogBySlug, updateBlog, deleteBlog, addComment, getComments, toggleLike, shareBlog, getRecommendedByBlog, editComment, deleteComment, searchBlogs, getCommentReplies, addCommentReply, updateCommentReply, deleteCommentReply } = require("../controllers/blogController");
 const { isAuthCheck } = require("../middileware/IsAuthCheck");
 const { isRoleCheak } = require("../middileware/IsRoleCheak");
 
@@ -16,6 +16,10 @@ router.get("/:id", getBlogById); // id or slug
 // interactions
 router.get("/:id/get-all-comments", getComments);
 router.post("/:id/add-comments", isAuthCheck, addComment);
+router.get("/:id/comments/:commentId/replies", getCommentReplies);
+router.post("/:id/comments/:commentId/replies", isAuthCheck, addCommentReply);
+router.put("/:id/comments/:commentId/replies/:replyId", isAuthCheck, updateCommentReply);
+router.delete("/:id/comments/:commentId/replies/:replyId", isAuthCheck, deleteCommentReply);
 router.put("/:id/comments/:commentId", isAuthCheck, editComment);
 router.delete("/:id/comments/:commentId", isAuthCheck, deleteComment);
 router.post("/:id/like", isAuthCheck, toggleLike);

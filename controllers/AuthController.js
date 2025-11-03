@@ -10,6 +10,119 @@ const mongoose = require("mongoose");
 //! user register without otp verification further they tell for otp verification i add the logic 
 
 const { uploadToS3, deleteFromS3 } = require("../special/s3Client");
+const { sendMail, buildFrontendUrl } = require("../special/mailer");
+const SignupOtp = require("../models/SignupOtp");
+const crypto = require("crypto");
+const otpGenerator = require("otp-generator");
+
+function hashOtp(otp) {
+  return crypto.createHash('sha256').update(String(otp)).digest('hex');
+}
+
+async function sendVerificationEmail(email, code, req) {
+  const subject = 'Your verification code';
+  const html = `<p>Your verification code is:</p><h2>${code}</h2><p>This code expires in 2 minutes.</p>`;
+  await sendMail({ to: email, subject, html, text: `Code: ${code}` });
+}
+
+// Request registration OTP
+const RequestRegisterOtp = async (req, res, next) => {
+  try {
+    const { fullname, email, password, phone, interested_topic, bio, socialLink, location, website } = req.body;
+    if (!fullname || !email || !password || !phone) {
+      return next(new ErrorHandeler("Please provide all details", 401));
+    }
+    const existingUser = await UserModel.findOne({ $or: [{ email }, { phone }] }).select('_id');
+    if (existingUser) return next(new ErrorHandeler('User already registered with this email or phone', 400));
+
+    // Build normalized payload (image upload handled after verification via profile)
+    let interestedTopicIds = [];
+    if (typeof interested_topic !== 'undefined') {
+      let items = [];
+      if (Array.isArray(interested_topic)) items = interested_topic;
+      else if (typeof interested_topic === 'string') items = interested_topic.includes(',') ? interested_topic.split(',') : [interested_topic];
+      interestedTopicIds = items.map(v => String(v).trim()).filter(v => /^[0-9a-fA-F]{24}$/.test(v));
+    }
+    const payload = { fullname, email, password, phone, interested_topic: interestedTopicIds, bio: bio||'', socialLink: socialLink||'', location: location||'', website: website||'' };
+
+    const now = new Date();
+    const existing = await SignupOtp.findOne({ email });
+    if (existing && existing.resendAfter && existing.resendAfter > now) {
+      const ms = existing.resendAfter.getTime() - now.getTime();
+      return next(new ErrorHandeler(`Please wait ${Math.ceil(ms/1000)} seconds before requesting a new code`, 429));
+    }
+
+    const code = otpGenerator.generate(6, { digits: true, lowerCaseAlphabets: false, upperCaseAlphabets: false, specialChars: false });
+    const otpHash = hashOtp(code);
+    const expiresAt = new Date(Date.now() + 2 * 60 * 1000); // 2 minutes
+    const resendAfter = new Date(Date.now() + 30 * 1000); // throttle 30s
+
+    if (existing) {
+      existing.otpHash = otpHash;
+      existing.expiresAt = expiresAt;
+      existing.payload = payload;
+      existing.resendAfter = resendAfter;
+      await existing.save();
+    } else {
+      await SignupOtp.create({ email, otpHash, expiresAt, payload, resendAfter });
+    }
+
+    await sendVerificationEmail(email, code, req);
+    res.json({ success: true, message: 'Verification code sent to email' });
+  } catch (error) { next(error); }
+};
+
+// Verify registration OTP and create user
+const VerifyRegisterOtp = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) return next(new ErrorHandeler('Email and otp are required', 400));
+    const rec = await SignupOtp.findOne({ email });
+    if (!rec) return next(new ErrorHandeler('No pending verification found', 404));
+    if (rec.expiresAt < new Date()) return next(new ErrorHandeler('Code expired. Please request a new one.', 400));
+    const ok = rec.otpHash === hashOtp(String(otp));
+    if (!ok) return next(new ErrorHandeler('Invalid code', 400));
+
+    const p = rec.payload || {};
+    const user = await UserModel.create({
+      fullname: p.fullname,
+      email: p.email,
+      password: p.password,
+      phone: p.phone,
+      interested_topic: p.interested_topic || [],
+      bio: p.bio || undefined,
+      socialLink: p.socialLink || undefined,
+      location: p.location || undefined,
+      website: p.website || undefined,
+      isVerified: true,
+    });
+    await SignupOtp.deleteOne({ _id: rec._id });
+
+    res.status(201).json({ success: true, message: 'Registration complete', data: { _id: user._id, email: user.email } });
+  } catch (error) { next(error); }
+};
+
+// Resend OTP (throttled)
+const ResendRegisterOtp = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) return next(new ErrorHandeler('Email is required', 400));
+    const rec = await SignupOtp.findOne({ email });
+    if (!rec) return next(new ErrorHandeler('No pending verification found', 404));
+    const now = new Date();
+    if (rec.resendAfter && rec.resendAfter > now) {
+      const ms = rec.resendAfter.getTime() - now.getTime();
+      return next(new ErrorHandeler(`Please wait ${Math.ceil(ms/1000)} seconds before requesting a new code`, 429));
+    }
+    const code = otpGenerator.generate(6, { digits: true, lowerCaseAlphabets: false, upperCaseAlphabets: false, specialChars: false });
+    rec.otpHash = hashOtp(code);
+    rec.expiresAt = new Date(Date.now() + 2 * 60 * 1000);
+    rec.resendAfter = new Date(Date.now() + 30 * 1000);
+    await rec.save();
+    await sendVerificationEmail(email, code, req);
+    res.json({ success: true, message: 'Verification code resent' });
+  } catch (error) { next(error); }
+};
 
 const UserRegister = async (req, res, next) => {
   try {
@@ -284,7 +397,13 @@ const EditProfile = async (req, res, next) => {
 
     await user.save();
     const sanitized = await UserModel.findById(user._id).select("-password");
-    res.json({ success: true, message: "Profile updated", data: sanitized });
+    const plain = sanitized ? sanitized.toObject() : null;
+    try {
+      if (plain && plain.profileimage && plain.profileimage.key) {
+        plain.profileimage.signedUrl = await getSignedUrlForKey(plain.profileimage.key, 3600);
+      }
+    } catch (_) {}
+    res.json({ success: true, message: "Profile updated", data: plain || sanitized });
   } catch (error) {
     next(error);
   }
@@ -320,4 +439,4 @@ const GetUserStats = async (req, res, next) => {
   }
 };
 
-module.exports = { UserRegister,Logout,Login ,StudentLogin,LoadUser,UpdateInterestedTopic,GetUserProfile, EditProfile, GetUserStats };
+module.exports = { UserRegister,Logout,Login ,StudentLogin,LoadUser,UpdateInterestedTopic,GetUserProfile, EditProfile, GetUserStats, RequestRegisterOtp, VerifyRegisterOtp, ResendRegisterOtp };

@@ -16,6 +16,8 @@ const feedRoutes = require("./routes/feedRoutes");
 const { startTrendingScheduler } = require("./special/trendingScheduler");
 const authRoutes = require("./routes/AuthRoute");
 const categoryRoutes = require("./routes/categoryRoutes");
+const announcementRoutes = require("./routes/announcementRoutes");
+const pushRoutes = require("./routes/pushRoutes");
 
 const sub_server = express();
 
@@ -67,6 +69,8 @@ sub_server.use("/api/admin", adminRoutes);
 sub_server.use("/api/feed", feedRoutes);
 sub_server.use("/api/auth", authRoutes);
 sub_server.use("/api", categoryRoutes);
+sub_server.use("/api/announcements", announcementRoutes);
+sub_server.use("/api/push", pushRoutes);
 sub_server.use(errorMiddliware);
 
 module.exports = { sub_server };

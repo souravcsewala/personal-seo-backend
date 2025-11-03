@@ -8,6 +8,14 @@ const AnswerSchema = new mongoose.Schema(
 		likes: { type: Number, default: 0 },
 		likedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "user" }],
 		isAccepted: { type: Boolean, default: false },
+		replies: [
+			{
+				user: { type: mongoose.Schema.Types.ObjectId, ref: "user" },
+				content: { type: String, required: true, trim: true },
+				parentId: { type: mongoose.Schema.Types.ObjectId },
+				createdAt: { type: Date, default: Date.now },
+			}
+		],
 	},
 	{ timestamps: true }
 );

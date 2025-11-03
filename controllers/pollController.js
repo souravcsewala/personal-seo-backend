@@ -2,6 +2,32 @@ const Poll = require("../models/Poll");
 const PollVote = require("../models/PollVote");
 const Category = require("../models/Category");
 const ErrorHandeler = require("../special/errorHandelar");
+const User = require("../models/User");
+const { sendMail, buildFrontendUrl } = require("../special/mailer");
+const { sanitizeHtml } = require("../utils/sanitizeHtml");
+const slugify = require("slugify");
+
+const toSlug = (title) => slugify(title || "", { lower: true, strict: true, trim: true });
+const generateUniqueSlug = async (title, excludeId) => {
+  const base = toSlug(title);
+  if (!base) return "";
+  const exists = async (candidate) => {
+    const filter = excludeId ? { slug: candidate, _id: { $ne: excludeId } } : { slug: candidate };
+    const doc = await Poll.findOne(filter).select("_id");
+    return !!doc;
+  };
+  let candidate = base;
+  if (!(await exists(candidate))) return candidate;
+  for (let i = 2; i <= 50; i++) {
+    const withNum = `${base}-${i}`;
+    if (!(await exists(withNum))) return withNum;
+  }
+  const timeSuffix = Date.now().toString(36).slice(-5);
+  candidate = `${base}-${timeSuffix}`;
+  if (!(await exists(candidate))) return candidate;
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `${base}-${timeSuffix}-${rand}`;
+};
 
 const resolveCategoryId = async (categoryInput) => {
   if (!categoryInput) return null;
@@ -25,17 +51,32 @@ const createPoll = async (req, res, next) => {
     else if (typeof options === 'string') optionList = options.split(',').map(o=>o.trim()).filter(Boolean);
     optionList = optionList.map(text => ({ text }));
 
+    const slug = await generateUniqueSlug(title);
     const poll = await Poll.create({
       title,
-      description,
+      description: sanitizeHtml(description),
       options: optionList,
       category: categoryId,
       durationDays: duration ? Number(duration) : undefined,
       allowMultipleVotes: Boolean(allowMultipleVotes),
       tags: Array.isArray(tags) ? tags : (typeof tags === 'string' ? tags.split(',').map(t=>t.trim()).filter(Boolean) : []),
       author: req.userid || (req.user && req.user._id) || undefined,
+      slug,
     });
     res.status(201).json({ success: true, data: poll });
+    // Notify subscribers to category
+    setImmediate(async () => {
+      try {
+        const subs = await User.find({ interested_topic: categoryId }).select('email _id');
+        const recipients = subs.filter(u => String(u._id) !== String(poll.author)).map(u => u.email).filter(Boolean);
+        if (recipients.length) {
+          const subject = `New Poll: ${poll.title}`;
+          const link = buildFrontendUrl(`poll/${encodeURIComponent(poll.slug || poll._id)}`, req);
+          const html = `<p>A new poll was posted in a category you follow.</p><p><strong>${poll.title}</strong></p><p><a href="${link}">Vote Now</a></p>`;
+          await sendMail({ to: recipients, subject, html, text: `${poll.title} - ${link}` });
+        }
+      } catch (_) {}
+    });
   } catch (error) {
     next(error);
   }
@@ -60,7 +101,9 @@ const getAllPolls = async (req, res, next) => {
 const getPollById = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const poll = await Poll.findById(id).populate('category').populate('author', 'fullname email');
+    const isObjectId = String(id).match(/^[0-9a-fA-F]{24}$/);
+    const filter = isObjectId ? { _id: id } : { slug: id };
+    const poll = await Poll.findOne(filter).populate('category').populate('author', 'fullname email');
     if (!poll) return next(new ErrorHandeler('Poll not found', 404));
     // increment views
     try { await Poll.updateOne({ _id: poll._id }, { $inc: { viewsCount: 1 } }); } catch (_) {}
@@ -77,8 +120,11 @@ const updatePoll = async (req, res, next) => {
     const poll = await Poll.findById(id);
     if (!poll) return next(new ErrorHandeler('Poll not found', 404));
 
-    if (title) poll.title = title;
-    if (description) poll.description = description;
+    if (title) {
+      poll.title = title;
+      poll.slug = await generateUniqueSlug(title, poll._id);
+    }
+    if (description) poll.description = sanitizeHtml(description);
     if (typeof allowMultipleVotes !== 'undefined') poll.allowMultipleVotes = Boolean(allowMultipleVotes);
     if (typeof duration !== 'undefined') poll.durationDays = Number(duration);
     if (typeof status !== 'undefined') poll.status = status;

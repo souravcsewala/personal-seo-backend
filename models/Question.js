@@ -2,8 +2,9 @@ const mongoose = require("mongoose");
 
 const QuestionSchema = new mongoose.Schema(
   {
-    title: { type: String, required: true, trim: true },
+    title: { type: String, trim: true },
     description: { type: String, required: true },
+    slug: { type: String, trim: true },
     category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
     tags: [{ type: String, trim: true }],
     author: { type: mongoose.Schema.Types.ObjectId, ref: "user" },
@@ -11,6 +12,15 @@ const QuestionSchema = new mongoose.Schema(
     viewsCount: { type: Number, default: 0 },
   },
   { timestamps: true }
+);
+
+QuestionSchema.index(
+  { slug: 1 },
+  {
+    unique: true,
+    name: "unique_question_slug",
+    partialFilterExpression: { slug: { $type: "string" } },
+  }
 );
 
 module.exports = mongoose.model("Question", QuestionSchema);
