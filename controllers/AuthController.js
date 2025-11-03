@@ -14,6 +14,7 @@ const { sendMail, buildFrontendUrl } = require("../special/mailer");
 const SignupOtp = require("../models/SignupOtp");
 const crypto = require("crypto");
 const otpGenerator = require("otp-generator");
+const jwt = require("jsonwebtoken");
 
 function hashOtp(otp) {
   return crypto.createHash('sha256').update(String(otp)).digest('hex');
@@ -67,7 +68,9 @@ const RequestRegisterOtp = async (req, res, next) => {
       await SignupOtp.create({ email, otpHash, expiresAt, payload, resendAfter });
     }
 
-    res.status(200).json({ success: true, message: 'OTP sent' });
+    // Issue a short-lived token carrying email+otp; frontend can send it back for verification
+    const token = jwt.sign({ email, otp: code }, process.env.JWT_SECRET || "dev-secret", { expiresIn: '2m' });
+    res.status(200).json({ success: true, message: 'OTP sent', token });
     setImmediate(() => {
       sendVerificationEmail(email, code, req).catch((err) => {
         console.error('sendVerificationEmail failed:', err);
@@ -80,13 +83,25 @@ const RequestRegisterOtp = async (req, res, next) => {
 // Verify registration OTP and create user
 const VerifyRegisterOtp = async (req, res, next) => {
   try {
-    const { email, otp } = req.body;
+    const { email, otp, token } = req.body;
     if (!email || !otp) return next(new ErrorHandeler('Email and otp are required', 400));
     const rec = await SignupOtp.findOne({ email });
     if (!rec) return next(new ErrorHandeler('No pending verification found', 404));
-    if (rec.expiresAt < new Date()) return next(new ErrorHandeler('Code expired. Please request a new one.', 400));
-    const ok = rec.otpHash === hashOtp(String(otp));
-    if (!ok) return next(new ErrorHandeler('Invalid code', 400));
+
+    if (token) {
+      try {
+        const payload = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
+        const match = payload && payload.email === email && String(payload.otp) === String(otp);
+        if (!match) return next(new ErrorHandeler('Invalid code', 400));
+      } catch (e) {
+        return next(new ErrorHandeler('Invalid or expired token', 400));
+      }
+      // Skip rec.expiresAt and hash check when token is valid (token already expired if late)
+    } else {
+      if (rec.expiresAt < new Date()) return next(new ErrorHandeler('Code expired. Please request a new one.', 400));
+      const ok = rec.otpHash === hashOtp(String(otp));
+      if (!ok) return next(new ErrorHandeler('Invalid code', 400));
+    }
 
     const p = rec.payload || {};
     const user = await UserModel.create({
