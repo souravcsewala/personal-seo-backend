@@ -1,7 +1,7 @@
 const express = require("express");
 const { isAuthCheck } = require("../middileware/IsAuthCheck");
 const { isRoleCheak } = require("../middileware/IsRoleCheak");
-const { createQuestion, getAllQuestions, getQuestionById, updateQuestion, deleteQuestion, getQuestionsByAuthor } = require("../controllers/questionController");
+const { createQuestion, getAllQuestions, getQuestionById, updateQuestion, deleteQuestion, getQuestionsByAuthor, toggleLikeQuestion, shareQuestion } = require("../controllers/questionController");
 const { createAnswer, getAnswers, toggleLikeAnswer, acceptAnswer, addReply, getReplies, updateAnswer, deleteAnswer, updateReply, deleteReply } = require("../controllers/answerController");
 
 const router = express.Router();
@@ -12,6 +12,8 @@ router.get("/:id", getQuestionById);
 router.post("/", isAuthCheck, createQuestion);
 router.put("/:id", isAuthCheck, updateQuestion);
 router.delete("/:id", isAuthCheck, deleteQuestion);
+router.post("/:id/like", isAuthCheck, toggleLikeQuestion);
+router.post("/:id/share", isAuthCheck, shareQuestion);
 
 // Answers
 router.get("/:questionId/answers", getAnswers);

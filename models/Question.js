@@ -10,6 +10,10 @@ const QuestionSchema = new mongoose.Schema(
     author: { type: mongoose.Schema.Types.ObjectId, ref: "user" },
     status: { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
     viewsCount: { type: Number, default: 0 },
+    // Interactions
+    likedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "user" }],
+    likesCount: { type: Number, default: 0 },
+    shareCount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
