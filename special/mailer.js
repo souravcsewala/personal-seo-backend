@@ -9,6 +9,12 @@ function getTransporter() {
     transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: { user: gmailUser, pass: gmailPass },
+      pool: true,
+      maxConnections: 3,
+      maxMessages: 100,
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 8000,
     });
     return transporter;
   }
@@ -22,6 +28,12 @@ function getTransporter() {
       port,
       secure: port === 465,
       auth: { user, pass },
+      pool: true,
+      maxConnections: 3,
+      maxMessages: 100,
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 8000,
     });
     return transporter;
   }

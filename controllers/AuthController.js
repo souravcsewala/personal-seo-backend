@@ -67,8 +67,13 @@ const RequestRegisterOtp = async (req, res, next) => {
       await SignupOtp.create({ email, otpHash, expiresAt, payload, resendAfter });
     }
 
-    await sendVerificationEmail(email, code, req);
-    return res.status(200).json({ success: true, message: 'OTP sent' });
+    res.status(200).json({ success: true, message: 'OTP sent' });
+    setImmediate(() => {
+      sendVerificationEmail(email, code, req).catch((err) => {
+        console.error('sendVerificationEmail failed:', err);
+      });
+    });
+    return;
   } catch (error) { next(error); }
 };
 
