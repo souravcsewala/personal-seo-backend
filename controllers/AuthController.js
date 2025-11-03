@@ -68,7 +68,7 @@ const RequestRegisterOtp = async (req, res, next) => {
     }
 
     await sendVerificationEmail(email, code, req);
-    res.json({ success: true, message: 'Verification code sent to email' });
+    return res.status(200).json({ success: true, message: 'OTP sent' });
   } catch (error) { next(error); }
 };
 
