@@ -18,6 +18,7 @@ const authRoutes = require("./routes/AuthRoute");
 const categoryRoutes = require("./routes/categoryRoutes");
 const announcementRoutes = require("./routes/announcementRoutes");
 const pushRoutes = require("./routes/pushRoutes");
+const userRoutes = require("./routes/userRoutes");
 
 const sub_server = express();
 
@@ -71,6 +72,7 @@ sub_server.use("/api/auth", authRoutes);
 sub_server.use("/api", categoryRoutes);
 sub_server.use("/api/announcements", announcementRoutes);
 sub_server.use("/api/push", pushRoutes);
+sub_server.use("/api/users", userRoutes);
 sub_server.use(errorMiddliware);
 
 module.exports = { sub_server };

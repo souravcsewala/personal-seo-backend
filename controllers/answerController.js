@@ -100,10 +100,17 @@ const acceptAnswer = async (req, res, next) => {
 		const isOwner = String(question.author) === String(userId);
 		const isAdmin = req.user && req.user.role === "admin";
 		if (!isOwner && !isAdmin) return next(new ErrorHandeler("Forbidden", 403));
-		await Answer.updateMany({ question: question._id, isAccepted: true }, { $set: { isAccepted: false } });
-		answer.isAccepted = true;
-		await answer.save();
-		res.json({ success: true, data: { answerId: answer._id, isAccepted: true } });
+    if (answer.isAccepted) {
+      // Toggle off (unaccept)
+      answer.isAccepted = false;
+      await answer.save();
+      return res.json({ success: true, data: { answerId: answer._id, isAccepted: false } });
+    }
+    // Accept this answer and clear previous
+    await Answer.updateMany({ question: question._id, isAccepted: true }, { $set: { isAccepted: false } });
+    answer.isAccepted = true;
+    await answer.save();
+    res.json({ success: true, data: { answerId: answer._id, isAccepted: true } });
 	} catch (error) {
 		next(error);
 	}

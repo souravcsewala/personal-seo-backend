@@ -96,6 +96,71 @@ async function getFeed(req, res, next) {
     const cap = Math.min(limit * page * 3, 1000);
     const user = req.user; // set by isAuthCheck
 
+    // Author filter: accepts authorId (ObjectId) or authorName (fullname, case-insensitive)
+    const authorIdRaw = (req.query.authorId || '').trim();
+    const authorNameRaw = (req.query.authorName || '').trim();
+    const foundAuthorIds = [];
+    if (authorIdRaw && authorIdRaw.match(/^[0-9a-fA-F]{24}$/)) {
+      foundAuthorIds.push(authorIdRaw);
+    } else if (authorNameRaw) {
+      try {
+        const matchUsers = await User.find({ fullname: { $regex: new RegExp(`^${authorNameRaw}$`, 'i') } }).select('_id');
+        for (const u of matchUsers) { foundAuthorIds.push(String(u._id)); }
+      } catch (_) {}
+    }
+    if (foundAuthorIds.length > 0) {
+      const total = await Blog.countDocuments({ author: { $in: foundAuthorIds } });
+      const docs = await Blog.find({ author: { $in: foundAuthorIds } })
+        .populate("category")
+        .populate("author", "fullname email profileimage")
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit);
+      const items = await Promise.all(
+        docs.map(async (d) => {
+          const plain = d.toObject();
+          if (plain.imageKey) { try { plain.signedUrl = await getSignedUrlForKey(plain.imageKey, 3600); } catch (_) {} }
+          return wrapBlog(plain);
+        })
+      );
+      const hasMore = total > (page - 1) * limit + items.length;
+      return res.json({ success: true, data: items, pagination: { page, limit, hasMore, total } });
+    }
+    const authorId = (req.query.authorId || '').trim();
+
+    // Author-specific feed when authorId provided
+    if (authorId && authorId.match(/^[0-9a-fA-F]{24}$/)) {
+      const [blogsDocs, questionsDocs, pollsDocs] = await Promise.all([
+        Blog.find({ author: authorId })
+          .populate("category")
+          .populate("author", "fullname email profileimage")
+          .sort({ createdAt: -1 })
+          .limit(cap),
+        Question.find({ author: authorId })
+          .populate("category")
+          .populate("author", "fullname email profileimage")
+          .sort({ createdAt: -1 })
+          .limit(cap),
+        Poll.find({ author: authorId })
+          .populate("category")
+          .populate("author", "fullname email profileimage")
+          .sort({ createdAt: -1 })
+          .limit(cap),
+      ]);
+      await Promise.all(questionsDocs.map((d) => ensureQuestionSlug(d)));
+      await Promise.all(pollsDocs.map((d) => ensurePollSlug(d)));
+      const blogs = await Promise.all(blogsDocs.map(async (d) => {
+        const plain = d.toObject();
+        if (plain.imageKey) { try { plain.signedUrl = await getSignedUrlForKey(plain.imageKey, 3600); } catch (_) {} }
+        return wrapBlog(plain);
+      }));
+      const items = mergeAndSortByDate([blogs, questionsDocs.map(wrapQuestion), pollsDocs.map(wrapPoll)]);
+      const skip = (page - 1) * limit;
+      const pageItems = items.slice(skip, skip + limit);
+      const hasMore = items.length > skip + pageItems.length;
+      return res.json({ success: true, data: pageItems, pagination: { page, limit, hasMore, total: items.length } });
+    }
+
     // trending
     const trendingRows = await TrendingScore.find({}).sort({ score: -1 }).limit(cap);
     const trendingKeys = new Set(trendingRows.map((t) => `${t.contentType}:${String(t.contentId)}`));
@@ -264,6 +329,71 @@ async function getPublicFeed(req, res, next) {
     const limit = Math.min(Number(req.query.limit) || 30, 100);
     const page = Math.max(Number(req.query.page) || 1, 1);
     const cap = Math.min(limit * page * 3, 1000);
+
+    // Author filter for public feed
+    const authorIdRaw = (req.query.authorId || '').trim();
+    const authorNameRaw = (req.query.authorName || '').trim();
+    const foundAuthorIds = [];
+    if (authorIdRaw && authorIdRaw.match(/^[0-9a-fA-F]{24}$/)) {
+      foundAuthorIds.push(authorIdRaw);
+    } else if (authorNameRaw) {
+      try {
+        const matchUsers = await User.find({ fullname: { $regex: new RegExp(`^${authorNameRaw}$`, 'i') } }).select('_id');
+        for (const u of matchUsers) { foundAuthorIds.push(String(u._id)); }
+      } catch (_) {}
+    }
+    if (foundAuthorIds.length > 0) {
+      const total = await Blog.countDocuments({ author: { $in: foundAuthorIds } });
+      const docs = await Blog.find({ author: { $in: foundAuthorIds } })
+        .populate("category")
+        .populate("author", "fullname email profileimage")
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit);
+      const items = await Promise.all(
+        docs.map(async (d) => {
+          const plain = d.toObject();
+          if (plain.imageKey) { try { plain.signedUrl = await getSignedUrlForKey(plain.imageKey, 3600); } catch (_) {} }
+          return wrapBlog(plain);
+        })
+      );
+      const hasMore = total > (page - 1) * limit + items.length;
+      return res.json({ success: true, data: items, pagination: { page, limit, hasMore, total } });
+    }
+    const authorId = (req.query.authorId || '').trim();
+
+    // Author-specific public feed when authorId provided
+    if (authorId && authorId.match(/^[0-9a-fA-F]{24}$/)) {
+      const [blogsDocs, questionsDocs, pollsDocs] = await Promise.all([
+        Blog.find({ author: authorId })
+          .populate("category")
+          .populate("author", "fullname email profileimage")
+          .sort({ createdAt: -1 })
+          .limit(cap),
+        Question.find({ author: authorId })
+          .populate("category")
+          .populate("author", "fullname email profileimage")
+          .sort({ createdAt: -1 })
+          .limit(cap),
+        Poll.find({ author: authorId })
+          .populate("category")
+          .populate("author", "fullname email profileimage")
+          .sort({ createdAt: -1 })
+          .limit(cap),
+      ]);
+      await Promise.all(questionsDocs.map((d) => ensureQuestionSlug(d)));
+      await Promise.all(pollsDocs.map((d) => ensurePollSlug(d)));
+      const blogs = await Promise.all(blogsDocs.map(async (d) => {
+        const plain = d.toObject();
+        if (plain.imageKey) { try { plain.signedUrl = await getSignedUrlForKey(plain.imageKey, 3600); } catch (_) {} }
+        return wrapBlog(plain);
+      }));
+      const items = mergeAndSortByDate([blogs, questionsDocs.map(wrapQuestion), pollsDocs.map(wrapPoll)]);
+      const skip = (page - 1) * limit;
+      const pageItems = items.slice(skip, skip + limit);
+      const hasMore = items.length > skip + pageItems.length;
+      return res.json({ success: true, data: pageItems, pagination: { page, limit, hasMore, total: items.length } });
+    }
 
     // trending
     const trendingRows = await TrendingScore.find({}).sort({ score: -1 }).limit(cap);

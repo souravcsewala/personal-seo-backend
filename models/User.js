@@ -46,6 +46,9 @@ const UserSchema = new mongoose.Schema({
   interested_topic: [
     { type: mongoose.Schema.Types.ObjectId, ref: "Category" }
   ],
+  // Social graph
+  followers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'user', index: true }],
+  following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'user', index: true }],
  
   createdAt: {
     type: Date,
